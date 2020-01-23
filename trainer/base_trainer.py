@@ -4,7 +4,6 @@ from pathlib import Path
 import json5
 import numpy as np
 import torch
-import torch.nn as nn
 
 from util import visualization
 from util.others import prepare_empty_dir, ExecutionTime
@@ -19,7 +18,6 @@ class BaseTrainer:
         self.optimizer_D = optim_D
 
         self.loss_function = loss_function
-        self.loss_adversarial = nn.BCEWithLogitsLoss()
 
         self.generator = G.to(self.device)
         self.discriminator = D.to(self.device)

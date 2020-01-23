@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from trainer.trainer import Trainer
+from torch.nn.utils.rnn import pad_sequence
 
 from util.others import initialize_config
 
@@ -22,7 +23,8 @@ def main(config, resume):
         batch_size=config["train_dataloader"]["batch_size"],
         num_workers=config["train_dataloader"]["num_workers"],
         shuffle=config["train_dataloader"]["shuffle"],
-        pin_memory=config["train_dataloader"]["pin_memory"]
+        pin_memory=config["train_dataloader"]["pin_memory"],
+        collate_fn=train_dataset.pad_batch
     )
 
     validation_dataset = initialize_config(config["validation_dataset"])
@@ -51,10 +53,10 @@ def main(config, resume):
     trainer = Trainer(
         config=config,
         resume=resume,
-        G=generator,
-        D=discriminator,
-        optim_G=generator_optimizer,
-        optim_D=discriminator_optimizer,
+        generator=generator,
+        discriminator=discriminator,
+        generator_optimizer=generator_optimizer,
+        discriminator_optimizer=discriminator_optimizer,
         loss_function=loss_function,
         train_dl=train_data_loader,
         validation_dl=valid_data_loader,

@@ -7,7 +7,7 @@ from joblib import Parallel, delayed
 
 from trainer.base_trainer import BaseTrainer
 from util.others import set_requires_grad
-from util.speech_processing import compute_STOI, compute_PESQ, mag_and_phase
+from util.speech_processing import compute_STOI, compute_PESQ
 
 plt.switch_backend('agg')
 
@@ -20,7 +20,7 @@ class Trainer(BaseTrainer):
                  discriminator,
                  generator_optimizer,
                  discriminator_optimizer,
-                 additional_loss_function,
+                 loss_function,
                  train_dl,
                  validation_dl):
         super(Trainer, self).__init__(
@@ -30,24 +30,26 @@ class Trainer(BaseTrainer):
             discriminator,
             generator_optimizer,
             discriminator_optimizer,
-            additional_loss_function
+            loss_function
         )
         self.train_dataloader = train_dl
         self.validation_dataloader = validation_dl
 
     @torch.no_grad()
-    def compute_batch_metric(self, batch_m, batch_clean, metric="pesq"):
+    def compute_batch_metric(self, batch_m, noisy_phase_list, clean_list, metric="pesq"):
         """
         计算 batch 内的评价指标，输入与输出均为 numpy 格式
 
         Args:
             batch_m: one batch stft matrix, [batch_size, 1, F, T]
-            batch_clean: one batch clean signal
+            clean_list: one batch clean signal
             metric: "pesq" or "stoi"
 
         Returns:
             metrics list
         """
+        assert len(batch_m) == len(noisy_phase_list) == len(clean_list)
+
         if metric == "pesq":
             metric_function = compute_PESQ
         elif metric == "stoi":
@@ -55,10 +57,7 @@ class Trainer(BaseTrainer):
         else:
             raise NotImplemented(f"Metric {metric} is not implemented.")
 
-        batch_m = np.squeeze(batch_m, axis=1)
-        assert batch_m.ndim == 3
-
-        batch_length = [Parallel(n_jobs=30)(delayed(len))(i) for i in batch_clean]
+        batch_length = Parallel(n_jobs=30)(delayed(len)(i) for i in clean_list)
 
         batch_y = Parallel(n_jobs=30)(
             delayed(librosa.istft)(
@@ -67,7 +66,7 @@ class Trainer(BaseTrainer):
         )
 
         batch_metric = Parallel(n_jobs=30)(
-            delayed(metric_function)(clean, noisy) for clean, noisy in zip(batch_clean, batch_y))
+            delayed(metric_function)(clean, noisy) for clean, noisy in zip(clean_list, batch_y))
 
         return batch_metric
 
@@ -80,7 +79,7 @@ class Trainer(BaseTrainer):
     def _train_epoch(self, epoch):
         batch_size = self.train_dataloader.batch_size
         n_batch = len(self.train_dataloader)
-        for i, (_, noisy_mag, noisy_phase, clean, clean_mag, _) in enumerate(
+        for i, (_, clean_list, _, noisy_mag, noisy_phase_list, clean_mag) in enumerate(
                 self.train_dataloader, start=1):
             # For visualization
             n_iter = n_batch * batch_size * (epoch - 1) + i * batch_size
@@ -108,11 +107,12 @@ class Trainer(BaseTrainer):
             enhanced_clean_pair = torch.cat((enhanced_mag.detach(), clean_mag), dim=1)
             enhanced_clean_score_in_D = self.discriminator(enhanced_clean_pair)
             enhanced_clean_score_in_metric = self.compute_batch_metric(
-                self.gpu_to_cpu(enhanced_mag * noisy_phase),
-                self.gpu_to_cpu(clean),
+                enhanced_mag.detach().cpu().squeeze(1).numpy(),
+                noisy_phase_list,
+                clean_list,
                 "pesq"
             )
-            enhanced_clean_score_in_metric = self.cpu_to_gpu(enhanced_clean_score_in_metric)
+            enhanced_clean_score_in_metric = torch.tensor(enhanced_clean_score_in_metric).unsqueeze(1).to(self.device)
             enhanced_clean_loss_in_D = self.loss_function(enhanced_clean_score_in_D, enhanced_clean_score_in_metric)
 
             loss_D = (clean_clean_loss_in_D + enhanced_clean_loss_in_D) * 0.5
@@ -121,22 +121,23 @@ class Trainer(BaseTrainer):
 
             with torch.no_grad():
                 self.writer.add_scalar(f"判别器/总损失", loss_D, n_iter)
-                self.writer.add_scalar(f"判别器/D(y, y)", clean_clean_loss_in_D, n_iter)
-                self.writer.add_scalar(f"判别器/D(G(x), y)", enhanced_clean_loss_in_D, n_iter)
+                self.writer.add_scalar(f"判别器/D(y, y)", clean_clean_loss_in_D.item(), n_iter)
+                self.writer.add_scalar(f"判别器/D(G(x), y)", enhanced_clean_loss_in_D.item(), n_iter)
 
             """================ Optimize G ================"""
             set_requires_grad(self.discriminator, False)
             self.optimizer_G.zero_grad()
 
             # D(enhanced, clean) => 1
-            enhanced_clean_score_in_G = self.discriminator(enhanced_mag, clean_mag)
+            enhanced_clean_pair = torch.cat((enhanced_mag, clean_mag), dim=1)
+            enhanced_clean_score_in_G = self.discriminator(enhanced_clean_pair)
             loss_G = self.loss_function(enhanced_clean_score_in_G, torch.ones(enhanced_clean_score_in_G.shape))
 
             loss_G.backward()
             self.optimizer_G.step()
 
             with torch.no_grad():
-                self.writer.add_scalar(f"生成器/损失", loss_G, n_iter)
+                self.writer.add_scalar(f"生成器/损失", loss_G.item(), n_iter)
 
     @torch.no_grad()
     def _validation_epoch(self, epoch):
@@ -149,23 +150,22 @@ class Trainer(BaseTrainer):
         pesq_c_n = []
         pesq_c_e = []
 
-        for i, (noisy, clean, name) in enumerate(self.validation_dataloader):
+        for i, (noisy, clean, name, noisy_mag, noisy_phase, clean_mag) in enumerate(self.validation_dataloader):
             assert len(name) == 1, "The batch size of validation dataloader must be 1."
             name = name[0]
+            noisy = noisy[0]
+            clean = clean[0]
 
-            noisy = np.squeeze(noisy.numpy())
-            clean = np.squeeze(clean.numpy())
+            # noisy_mag, noisy_phase, noisy_length = mag_and_phase(noisy)
 
-            noisy_mag, noisy_phase, noisy_length = mag_and_phase(noisy)
-
-            noisy_mag = torch.tensor(noisy_mag).reshape(1, 1, *(noisy_mag.shape)).to(self.device)  # [1, 1, F, T]
+            noisy_mag = noisy_mag.to(self.device)  # [1, 1, F, T]
             pred_mask = self.generator(noisy_mag)
             pred_mask = torch.max(pred_mask, torch.full(pred_mask.shape, 0.05).to(self.device))
             enhanced_mag = noisy_mag * pred_mask
-            enhanced_mag = self.gpu_to_cpu(enhanced_mag).squeeze(0).squeeze(0)
+            enhanced_mag = enhanced_mag.detach().cpu().numpy()
 
-            enhanced = librosa.istft(enhanced_mag * noisy_phase, hop_length=256, win_length=512, length=noisy_length)
-            assert noisy_length == len(clean) == len(enhanced)
+            enhanced = librosa.istft(enhanced_mag * noisy_phase.numpy(), hop_length=256, win_length=512, length=len(noisy))
+            assert len(noisy) == len(clean) == len(enhanced)
 
             # Visualize audio
             if i <= visualize_audio_limit:

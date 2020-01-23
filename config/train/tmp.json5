@@ -1,0 +1,64 @@
+{
+    "seed": 0,
+    "description": "null",
+    "root_dir": "~/Experiments/MetricGAN",
+    "cudnn_deterministic": false,
+    "trainer": {
+        "epochs": 1000,
+        "save_checkpoint_interval": 1,
+        "validation": {
+            "interval": 1,
+            "find_max": true,
+            "custom": {
+                "visualize_audio_limit": 20,
+                "visualize_waveform_limit": 20,
+                "visualize_spectrogram_limit": 20
+            }
+        }
+    },
+    "generator_model": {
+        "module": "model.generator_official",
+        "main": "Generator",
+        "args": {}
+    },
+    "discriminator_model": {
+        "module": "model.discriminator_official",
+        "main": "Discriminator",
+        "args": {}
+    },
+    "loss_function": {
+        "module": "util.loss",
+        "main": "mse_loss",
+        "args": {}
+    },
+    "optimizer": {
+        "G_lr": 0.001,
+        "D_lr": 0.001,
+        "beta1": 0.9,
+        "beta2": 0.999
+    },
+    "train_dataset": {
+        "module": "dataset.mask_dataset",
+        "main": "MaskDataset",
+        "args": {
+            "dataset": "~/Datasets/2020-01-17-Pyramid-Teacher-and-Student-Datasets/Teacher/Level_1/level_1_teacher_-3_3_3/train.txt",
+            "limit": null,
+            "offset": 0
+        }
+    },
+    "validation_dataset": {
+        "module": "dataset.mask_dataset",
+        "main": "MaskDataset",
+        "args": {
+            "dataset": "~/Datasets/2020-01-17-Pyramid-Teacher-and-Student-Datasets/Teacher/Level_1/level_1_teacher_-3_3_3/test.txt",
+            "limit": 400,
+            "offset": 0
+        }
+    },
+    "train_dataloader": {
+        "batch_size": 10,
+        "num_workers": 20,
+        "shuffle": true,
+        "pin_memory": true
+    }
+}
