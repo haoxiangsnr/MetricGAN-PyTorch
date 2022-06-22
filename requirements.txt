@@ -2,7 +2,7 @@ future==0.17.1
 joblib==0.13.2
 json5==0.8.5
 matplotlib==3.1.1
-numpy==1.16.5
+numpy==1.22.0
 pypesq==1.0
 pystoi==0.2.2
 tensorboard==1.14.0
